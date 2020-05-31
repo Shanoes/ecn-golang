@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,7 +24,8 @@ func main() {
 		mode     = flag.String("mode", "", "Security mode: None, Sign, SignAndEncrypt. Default: auto")
 		certFile = flag.String("cert", "", "Path to cert.pem. Required for security mode/policy != None")
 		keyFile  = flag.String("key", "", "Path to private key.pem. Required for security mode/policy != None")
-		nodeID   = flag.String("node", "", "node id to subscribe to")
+		nodeIDs  = flag.String("nodes", "", "node ids to subscribe to, seperated by commas")
+		nodePre  = flag.String("prefix", "ns=2;s=0:", "prefix to add to Node IDs.")
 		interval = flag.String("interval", opcua.DefaultSubscriptionInterval.String(), "subscription interval")
 	)
 	flag.BoolVar(&debug.Enable, "debug", false, "enable debug logging")
@@ -89,13 +92,17 @@ func main() {
 	})
 	wg := &sync.WaitGroup{}
 
-	// start callback-based subscription
-	wg.Add(1)
-	go startCallbackSub(ctx, m, subInterval, 0, wg, *nodeID)
+	split := strings.Split(*nodeIDs, ",")
+	var nodes []string
+	for _, nodeID := range split {
+		nodes = append(nodes, *nodePre+nodeID)
+	}
+	fmt.Printf("Adding nodes: %q\n", nodes)
 
-	// start channel-based subscription
 	wg.Add(1)
-	go startChanSub(ctx, m, subInterval, 0, wg, *nodeID)
+	go startCallbackSub(ctx, m, subInterval, 0, wg, nodes...)
+	wg.Add(1)
+	go startChanSub(ctx, m, subInterval, 0, wg, nodes...)
 
 	<-ctx.Done()
 	wg.Wait()

@@ -8,7 +8,12 @@ FROM golang:1.14-alpine3.11 as builder
 
 RUN apk update
 RUN apk add --no-cache git
+# OPC UA
 RUN go get -u github.com/gopcua/opcua
+# MQTT
+RUN go get github.com/eclipse/paho.mqtt.golang
+RUN go get github.com/gorilla/websocket
+RUN go get golang.org/x/net/proxy
 
 RUN mkdir /build 
 ADD ./src/monitor.go /build/

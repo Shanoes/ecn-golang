@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/gopcua/opcua"
@@ -23,9 +24,12 @@ func main() {
 		mode     = flag.String("mode", "", "Security mode: None, Sign, SignAndEncrypt. Default: auto")
 		certFile = flag.String("cert", "", "Path to cert.pem. Required for security mode/policy != None")
 		keyFile  = flag.String("key", "", "Path to private key.pem. Required for security mode/policy != None")
-		nodeID   = flag.String("node", "", "node id to subscribe to")
+		//nodeID   = flag.String("node", "", "node id to subscribe to")
+		nodeIDs  = flag.String("nodes", "", "node ids to subscribe to, seperated by commas")
+		nodePre  = flag.String("prefix", "ns=2;s=0:", "prefix to add to Node IDs.")
 		interval = flag.String("interval", opcua.DefaultSubscriptionInterval.String(), "subscription interval")
 	)
+
 	flag.BoolVar(&debug.Enable, "debug", false, "enable debug logging")
 	flag.Parse()
 	log.SetFlags(0)
@@ -40,6 +44,18 @@ func main() {
 	d := 30 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	defer cancel()
+
+	//signalCh := make(chan os.Signal, 1)
+	//signal.Notify(signalCh, os.Interrupt)
+
+	//ctx, cancel := context.WithCancel(context.Background())
+	//defer cancel()
+
+	//go func() {
+	//	<-signalCh
+	//	println()
+	//	cancel()
+	//}()
 
 	endpoints, err := opcua.GetEndpoints(*endpoint)
 	if err != nil {
@@ -85,7 +101,26 @@ func main() {
 	defer sub.Cancel()
 	log.Printf("Created subscription with id %v", sub.SubscriptionID)
 
-	id, err := ua.ParseNodeID(*nodeID)
+	split := strings.Split(*nodeIDs, ",")
+	fmt.Printf("Node split result: %q\n", split)
+	for _, nodeID := range split {
+		fmt.Printf("Creating node: %q\n", *nodePre+nodeID)
+	}
+	// 	id, err := ua.ParseNodeID(nodeID)
+	// 	if err != nil {
+	// 		log.Fatal(err)
+	// 	}
+	// 	// arbitrary client handle for the monitoring item
+	// 	fmt.Printf("Creating monitor: %q\n", *nodePre+nodeID)
+	// 	handle := uint32(42 + index)
+	// 	miCreateRequest := opcua.NewMonitoredItemCreateRequestWithDefaults(id, ua.AttributeIDValue, handle)
+	// 	res, err := sub.Monitor(ua.TimestampsToReturnBoth, miCreateRequest)
+	// 	if err != nil || res.Results[0].StatusCode != ua.StatusOK {
+	// 		log.Fatal(err)
+	// 	}
+	// }
+
+	id, err := ua.ParseNodeID("ns=2;s=0:TANK1_LEVEL")
 	if err != nil {
 		log.Fatal(err)
 	}
