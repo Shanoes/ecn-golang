@@ -11,11 +11,22 @@ import (
 	"sync"
 	"time"
 
+	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/gopcua/opcua"
 	"github.com/gopcua/opcua/debug"
 	"github.com/gopcua/opcua/monitor"
 	"github.com/gopcua/opcua/ua"
+	// mqtt "github.com/eclipse/paho.mqtt.golang"
+	// "github.com/gopcua/opcua"
+	// "github.com/gopcua/opcua/debug"
+	// "github.com/gopcua/opcua/monitor"
+	// "github.com/gopcua/opcua/ua"
 )
+
+var mqttHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
+	fmt.Printf("TOPIC: %s\n", msg.Topic())
+	fmt.Printf("MSG: %s\n", msg.Payload())
+}
 
 func main() {
 	var (
@@ -27,9 +38,29 @@ func main() {
 		nodeIDs  = flag.String("nodes", "", "node ids to subscribe to, seperated by commas")
 		nodePre  = flag.String("prefix", "ns=2;s=0:", "prefix to add to Node IDs.")
 		interval = flag.String("interval", opcua.DefaultSubscriptionInterval.String(), "subscription interval")
+		//topic    = flag.String("topic", "ecn-test", "The MQTT topic name to publish to")
+		broker   = flag.String("broker", "tcp://localhost:1883", "The MQTT broker URI. ex: tcp://10.10.1.1:1883")
+		clientID = flag.String("client", "ecn-test", "The MQTT client ID")
+		user     = flag.String("user", "cedalo", "The MQTT broker username")
+		pass     = flag.String("pass", "xfIxdLKiuQ8Lr45LJFj9WSbgn", "The MQTT broker password")
 	)
 	flag.BoolVar(&debug.Enable, "debug", false, "enable debug logging")
 	flag.Parse()
+
+	// Setup MQTT client with reasonable defaults
+	mqtt.DEBUG = log.New(os.Stdout, "", 0)
+	mqtt.ERROR = log.New(os.Stdout, "", 0)
+	mqttOpts := mqtt.NewClientOptions().AddBroker(*broker).SetClientID(*clientID)
+	mqttOpts.SetKeepAlive(2 * time.Second)
+	mqttOpts.SetDefaultPublishHandler(mqttHandler)
+	mqttOpts.SetPingTimeout(1 * time.Second)
+	mqttOpts.SetUsername(*user)
+	mqttOpts.SetPassword(*pass)
+
+	mqttClient := mqtt.NewClient(mqttOpts)
+	if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
+		panic(token.Error())
+	}
 
 	// log.SetFlags(0)
 
@@ -92,6 +123,7 @@ func main() {
 	})
 	wg := &sync.WaitGroup{}
 
+	// Parse nodeIDs and start subscriptions
 	split := strings.Split(*nodeIDs, ",")
 	var nodes []string
 	for _, nodeID := range split {
@@ -99,49 +131,82 @@ func main() {
 	}
 	fmt.Printf("Adding nodes: %q\n", nodes)
 
+	// TODO - I'm not sure of the difference between this..
+	// wg.Add(1)
+	// go startCallbackSub(ctx, m, subInterval, 0, wg, nodes...)
+	// ...and this? Both seem to work.
 	wg.Add(1)
-	go startCallbackSub(ctx, m, subInterval, 0, wg, nodes...)
-	wg.Add(1)
-	go startChanSub(ctx, m, subInterval, 0, wg, nodes...)
+	// go startChanSub(ctx, m, subInterval, 0, wg, nodes...)
+	go startPubSub(ctx, mqttClient, m, subInterval, 0, wg, nodes...)
 
 	<-ctx.Done()
 	wg.Wait()
 }
 
-func startCallbackSub(ctx context.Context, m *monitor.NodeMonitor, interval, lag time.Duration, wg *sync.WaitGroup, nodes ...string) {
-	sub, err := m.Subscribe(
-		ctx,
-		&opcua.SubscriptionParameters{
-			Interval: interval,
-		},
-		func(s *monitor.Subscription, msg *monitor.DataChangeMessage) {
-			if msg.Error != nil {
-				log.Printf("[callback] sub=%d error=%s", s.SubscriptionID(), msg.Error)
-			} else {
-				log.Printf("[callback] sub=%d ts=%s node=%s value=%v", s.SubscriptionID(), msg.SourceTimestamp.UTC().Format(time.RFC3339), msg.NodeID, msg.Value.Value())
-			}
-			time.Sleep(lag)
-		},
-		nodes...)
+// func startCallbackSub(ctx context.Context, m *monitor.NodeMonitor, interval, lag time.Duration, wg *sync.WaitGroup, nodes ...string) {
+// 	sub, err := m.Subscribe(
+// 		ctx,
+// 		&opcua.SubscriptionParameters{
+// 			Interval: interval,
+// 		},
+// 		func(s *monitor.Subscription, msg *monitor.DataChangeMessage) {
+// 			if msg.Error != nil {
+// 				log.Printf("[callback] sub=%d error=%s", s.SubscriptionID(), msg.Error)
+// 			} else {
+// 				log.Printf("[callback] sub=%d ts=%s node=%s value=%v", s.SubscriptionID(), msg.SourceTimestamp.UTC().Format(time.RFC3339), msg.NodeID, msg.Value.Value())
+// 			}
+// 			time.Sleep(lag)
+// 		},
+// 		nodes...)
 
-	if err != nil {
-		log.Fatal(err)
-	}
+// 	if err != nil {
+// 		log.Fatal(err)
+// 	}
 
-	defer cleanup(sub, wg)
+// 	defer cleanup(sub, wg)
 
-	<-ctx.Done()
-}
+// 	<-ctx.Done()
+// }
 
-func startChanSub(ctx context.Context, m *monitor.NodeMonitor, interval, lag time.Duration, wg *sync.WaitGroup, nodes ...string) {
-	ch := make(chan *monitor.DataChangeMessage, 16)
+// func startChanSub(ctx context.Context, m *monitor.NodeMonitor, interval, lag time.Duration, wg *sync.WaitGroup, nodes ...string) {
+// 	ch := make(chan *monitor.DataChangeMessage, 64)
+// 	sub, err := m.ChanSubscribe(ctx, &opcua.SubscriptionParameters{Interval: interval}, ch, nodes...)
+
+// 	if err != nil {
+// 		log.Fatal(err)
+// 	}
+
+// 	defer cleanup(sub, wg)
+
+// 	for {
+// 		select {
+// 		case <-ctx.Done():
+// 			return
+// 		case msg := <-ch:
+// 			if msg.Error != nil {
+// 				log.Printf("[channel ] sub=%d error=%s", sub.SubscriptionID(), msg.Error)
+// 			} else {
+// 				// fmt.Println("---- doing publish ----")
+// 				// token := mqttClient.Publish(*topic, byte(*qos), false, *payload)
+// 				// token.Wait()
+
+// 				log.Printf("[channel ] sub=%d ts=%s node=%s value=%v", sub.SubscriptionID(), msg.SourceTimestamp.UTC().Format(time.RFC3339), msg.NodeID.StringID(), msg.Value.Value())
+// 			}
+// 			time.Sleep(lag)
+// 		}
+// 	}
+// }
+
+// subscribe to OPC channel and publish MQTT message on OPC message receipt
+func startPubSub(ctx context.Context, mqttClient mqtt.Client, m *monitor.NodeMonitor, interval, lag time.Duration, wg *sync.WaitGroup, nodes ...string) {
+	ch := make(chan *monitor.DataChangeMessage, 64)
 	sub, err := m.ChanSubscribe(ctx, &opcua.SubscriptionParameters{Interval: interval}, ch, nodes...)
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	defer cleanup(sub, wg)
+	defer cleanup(sub, wg, mqttClient)
 
 	for {
 		select {
@@ -151,15 +216,18 @@ func startChanSub(ctx context.Context, m *monitor.NodeMonitor, interval, lag tim
 			if msg.Error != nil {
 				log.Printf("[channel ] sub=%d error=%s", sub.SubscriptionID(), msg.Error)
 			} else {
-				log.Printf("[channel ] sub=%d ts=%s node=%s value=%v", sub.SubscriptionID(), msg.SourceTimestamp.UTC().Format(time.RFC3339), msg.NodeID, msg.Value.Value())
+				//log.Printf("[channel ] sub=%d ts=%s node=%s value=%v", sub.SubscriptionID(), msg.SourceTimestamp.UTC().Format(time.RFC3339), msg.NodeID, msg.Value.Value())
+				log.Printf("[channel ] sub=%d node=%s value=%v", sub.SubscriptionID(), msg.NodeID, msg.Value.Value())
+				mqttClient.Publish("ecn/"+msg.NodeID.String(), 0, false, msg.Value.Value())
 			}
 			time.Sleep(lag)
 		}
 	}
 }
 
-func cleanup(sub *monitor.Subscription, wg *sync.WaitGroup) {
+func cleanup(sub *monitor.Subscription, wg *sync.WaitGroup, mqttClient mqtt.Client) {
 	log.Printf("stats: sub=%d delivered=%d dropped=%d", sub.SubscriptionID(), sub.Delivered(), sub.Dropped())
 	sub.Unsubscribe()
+	mqttClient.Disconnect(250)
 	wg.Done()
 }
