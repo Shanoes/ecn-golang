@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -16,11 +17,6 @@ import (
 	"github.com/gopcua/opcua/debug"
 	"github.com/gopcua/opcua/monitor"
 	"github.com/gopcua/opcua/ua"
-	// mqtt "github.com/eclipse/paho.mqtt.golang"
-	// "github.com/gopcua/opcua"
-	// "github.com/gopcua/opcua/debug"
-	// "github.com/gopcua/opcua/monitor"
-	// "github.com/gopcua/opcua/ua"
 )
 
 var mqttHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
@@ -38,7 +34,7 @@ func main() {
 		nodeIDs  = flag.String("nodes", "", "node ids to subscribe to, seperated by commas")
 		nodePre  = flag.String("prefix", "ns=2;s=0:", "prefix to add to Node IDs.")
 		interval = flag.String("interval", opcua.DefaultSubscriptionInterval.String(), "subscription interval")
-		//topic    = flag.String("topic", "ecn-test", "The MQTT topic name to publish to")
+		topic    = flag.String("topic", "ecn/", "The MQTT topic name to publish to")
 		broker   = flag.String("broker", "tcp://localhost:1883", "The MQTT broker URI. ex: tcp://10.10.1.1:1883")
 		clientID = flag.String("client", "ecn-test", "The MQTT client ID")
 		user     = flag.String("user", "cedalo", "The MQTT broker username")
@@ -137,7 +133,7 @@ func main() {
 	// ...and this? Both seem to work.
 	wg.Add(1)
 	// go startChanSub(ctx, m, subInterval, 0, wg, nodes...)
-	go startPubSub(ctx, mqttClient, m, subInterval, 0, wg, nodes...)
+	go startPubSub(ctx, *topic, mqttClient, m, subInterval, 0, wg, nodes...)
 
 	<-ctx.Done()
 	wg.Wait()
@@ -198,7 +194,7 @@ func main() {
 // }
 
 // subscribe to OPC channel and publish MQTT message on OPC message receipt
-func startPubSub(ctx context.Context, mqttClient mqtt.Client, m *monitor.NodeMonitor, interval, lag time.Duration, wg *sync.WaitGroup, nodes ...string) {
+func startPubSub(ctx context.Context, topic string, mqttClient mqtt.Client, m *monitor.NodeMonitor, interval, lag time.Duration, wg *sync.WaitGroup, nodes ...string) {
 	ch := make(chan *monitor.DataChangeMessage, 64)
 	sub, err := m.ChanSubscribe(ctx, &opcua.SubscriptionParameters{Interval: interval}, ch, nodes...)
 
@@ -213,14 +209,23 @@ func startPubSub(ctx context.Context, mqttClient mqtt.Client, m *monitor.NodeMon
 		case <-ctx.Done():
 			return
 		case msg := <-ch:
-			if msg.Error != nil {
-				log.Printf("[channel ] sub=%d error=%s", sub.SubscriptionID(), msg.Error)
+			b, e := messageToJSON(*msg)
+			if e != nil {
+				log.Printf("[channel] " + e.Error())
 			} else {
-				//log.Printf("[channel ] sub=%d ts=%s node=%s value=%v", sub.SubscriptionID(), msg.SourceTimestamp.UTC().Format(time.RFC3339), msg.NodeID, msg.Value.Value())
-				log.Printf("[channel ] sub=%d node=%s value=%v", sub.SubscriptionID(), msg.NodeID, msg.Value.Value())
-				mqttClient.Publish("ecn/"+msg.NodeID.String(), 0, false, msg.Value.Value())
+				log.Printf("[channel] publish " + string(b))
+				token := mqttClient.Publish(topic, 0, false, b)
+				token.Wait()
 			}
-			time.Sleep(lag)
+			// if msg.Error != nil {
+			// 	log.Printf("[channel ] sub=%d error=%s", sub.SubscriptionID(), msg.Error)
+			// } else {
+			// 	//log.Printf("[channel ] sub=%d ts=%s node=%s value=%v", sub.SubscriptionID(), msg.SourceTimestamp.UTC().Format(time.RFC3339), msg.NodeID, msg.Value.Value())
+			// 	log.Printf("[channel ] sub=%d node=%s value=%v", sub.SubscriptionID(), msg.NodeID, msg.Value.Value())
+			// 	token := mqttClient.Publish("ecn/", 0, false, msg.NodeID.String()+":"+fmt.Sprintf("%f", msg.Value.Value().(float32)))
+			// 	token.Wait()
+			// }
+			//time.Sleep(lag)
 		}
 	}
 }
@@ -230,4 +235,21 @@ func cleanup(sub *monitor.Subscription, wg *sync.WaitGroup, mqttClient mqtt.Clie
 	sub.Unsubscribe()
 	mqttClient.Disconnect(250)
 	wg.Done()
+}
+
+type ecnData struct {
+	Tag       string
+	Val       float32
+	Timestamp string
+	Err       string
+}
+
+func messageToJSON(message monitor.DataChangeMessage) ([]byte, error) {
+	var e ecnData
+	if message.Error != nil {
+		e = ecnData{"", 0.0, "", message.Error.Error()}
+	} else {
+		e = ecnData{message.NodeID.StringID(), message.Value.Value().(float32), message.SourceTimestamp.UTC().Format(time.StampMilli), ""}
+	}
+	return json.Marshal(e)
 }
