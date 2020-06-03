@@ -139,6 +139,59 @@ func main() {
 	wg.Wait()
 }
 
+// subscribe to OPC channel and publish MQTT message on OPC message receipt
+func startPubSub(ctx context.Context, topic string, mqttClient mqtt.Client, m *monitor.NodeMonitor, interval, lag time.Duration, wg *sync.WaitGroup, nodes ...string) {
+	ch := make(chan *monitor.DataChangeMessage, 64)
+	sub, err := m.ChanSubscribe(ctx, &opcua.SubscriptionParameters{Interval: interval}, ch, nodes...)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer cleanup(sub, wg, mqttClient)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-ch:
+			b, e := messageToJSON(*msg)
+			if e != nil {
+				log.Printf("[channel] " + e.Error())
+			} else {
+				tag := msg.NodeID.StringID()[2:]
+				// log.Printf("[channel] publish " + string(b) + " to " + topic + tag)
+				token := mqttClient.Publish(topic+tag, 0, false, b)
+				token.Wait()
+			}
+		}
+	}
+}
+
+func cleanup(sub *monitor.Subscription, wg *sync.WaitGroup, mqttClient mqtt.Client) {
+	log.Printf("stats: sub=%d delivered=%d dropped=%d", sub.SubscriptionID(), sub.Delivered(), sub.Dropped())
+	sub.Unsubscribe()
+	mqttClient.Disconnect(250)
+	wg.Done()
+}
+
+type ecnData struct {
+	Tag       string
+	Val       float32
+	Timestamp string
+	Err       string
+}
+
+func messageToJSON(message monitor.DataChangeMessage) ([]byte, error) {
+	var e ecnData
+	if message.Error != nil {
+		e = ecnData{"", 0.0, "", message.Error.Error()}
+	} else {
+		e = ecnData{message.NodeID.StringID()[2:], message.Value.Value().(float32), message.SourceTimestamp.UTC().Format(time.StampMilli), ""}
+	}
+	return json.Marshal(e)
+}
+
 // func startCallbackSub(ctx context.Context, m *monitor.NodeMonitor, interval, lag time.Duration, wg *sync.WaitGroup, nodes ...string) {
 // 	sub, err := m.Subscribe(
 // 		ctx,
@@ -192,64 +245,3 @@ func main() {
 // 		}
 // 	}
 // }
-
-// subscribe to OPC channel and publish MQTT message on OPC message receipt
-func startPubSub(ctx context.Context, topic string, mqttClient mqtt.Client, m *monitor.NodeMonitor, interval, lag time.Duration, wg *sync.WaitGroup, nodes ...string) {
-	ch := make(chan *monitor.DataChangeMessage, 64)
-	sub, err := m.ChanSubscribe(ctx, &opcua.SubscriptionParameters{Interval: interval}, ch, nodes...)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	defer cleanup(sub, wg, mqttClient)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case msg := <-ch:
-			b, e := messageToJSON(*msg)
-			if e != nil {
-				log.Printf("[channel] " + e.Error())
-			} else {
-				log.Printf("[channel] publish " + string(b))
-				token := mqttClient.Publish(topic, 0, false, b)
-				token.Wait()
-			}
-			// if msg.Error != nil {
-			// 	log.Printf("[channel ] sub=%d error=%s", sub.SubscriptionID(), msg.Error)
-			// } else {
-			// 	//log.Printf("[channel ] sub=%d ts=%s node=%s value=%v", sub.SubscriptionID(), msg.SourceTimestamp.UTC().Format(time.RFC3339), msg.NodeID, msg.Value.Value())
-			// 	log.Printf("[channel ] sub=%d node=%s value=%v", sub.SubscriptionID(), msg.NodeID, msg.Value.Value())
-			// 	token := mqttClient.Publish("ecn/", 0, false, msg.NodeID.String()+":"+fmt.Sprintf("%f", msg.Value.Value().(float32)))
-			// 	token.Wait()
-			// }
-			//time.Sleep(lag)
-		}
-	}
-}
-
-func cleanup(sub *monitor.Subscription, wg *sync.WaitGroup, mqttClient mqtt.Client) {
-	log.Printf("stats: sub=%d delivered=%d dropped=%d", sub.SubscriptionID(), sub.Delivered(), sub.Dropped())
-	sub.Unsubscribe()
-	mqttClient.Disconnect(250)
-	wg.Done()
-}
-
-type ecnData struct {
-	Tag       string
-	Val       float32
-	Timestamp string
-	Err       string
-}
-
-func messageToJSON(message monitor.DataChangeMessage) ([]byte, error) {
-	var e ecnData
-	if message.Error != nil {
-		e = ecnData{"", 0.0, "", message.Error.Error()}
-	} else {
-		e = ecnData{message.NodeID.StringID(), message.Value.Value().(float32), message.SourceTimestamp.UTC().Format(time.StampMilli), ""}
-	}
-	return json.Marshal(e)
-}
